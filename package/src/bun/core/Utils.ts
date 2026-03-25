@@ -1,8 +1,8 @@
 import { ffi, native } from "../proc/native";
 import { electrobunEventEmitter } from "../events/eventEmitter";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { OS } from "../../shared/platform";
 
 export const moveToTrash = (path: string) => {
@@ -424,6 +424,53 @@ function getUserDir(
 	}
 }
 
+// ============================================================================
+// Portable mode — VS Code-style data/ folder detection
+// ============================================================================
+
+/**
+ * Detect a portable data directory next to the executable.
+ *
+ * When a `data/` folder exists alongside the app binary (or on macOS,
+ * `{AppName}-portable-data/` next to the `.app` bundle), all app-scoped
+ * directories (userData, userCache, userLogs) are redirected into it.
+ * The folder's existence is the only trigger — no config or marker files needed.
+ *
+ * Layout inside the portable data dir:
+ *   data/user-data/   — replaces userData
+ *   data/cache/       — replaces userCache
+ *   data/logs/        — replaces userLogs
+ *   data/tmp/         — replaces temp (if present)
+ */
+function detectPortableDataDir(): string | null {
+	try {
+		const exeDir = dirname(process.execPath);
+
+		if (OS === "macos") {
+			// macOS bundles: exe is at MyApp.app/Contents/MacOS/MyApp
+			// Look for {AppName}-portable-data/ next to the .app bundle
+			const appBundle = resolve(exeDir, "../..");
+			if (appBundle.endsWith(".app")) {
+				const bundleName = basename(appBundle, ".app");
+				const macDataDir = join(
+					dirname(appBundle),
+					`${bundleName}-portable-data`,
+				);
+				if (existsSync(macDataDir)) return macDataDir;
+			}
+		}
+
+		// Windows & Linux (also macOS fallback): data/ next to the executable
+		const dataDir = join(exeDir, "data");
+		if (existsSync(dataDir)) return dataDir;
+	} catch {
+		// Non-fatal — fall through to standard paths
+	}
+	return null;
+}
+
+const _portableDataDir = detectPortableDataDir();
+
 export const paths = {
 	get home(): string {
 		return home;
@@ -472,15 +519,26 @@ export const paths = {
 		return getUserDir("Movies", "Videos", "XDG_VIDEOS_DIR", "Videos");
 	},
 	get userData(): string {
+		if (_portableDataDir) return join(_portableDataDir, "user-data");
 		const { identifier, channel } = getVersionInfo();
 		return join(getAppDataDir(), identifier, channel);
 	},
 	get userCache(): string {
+		if (_portableDataDir) return join(_portableDataDir, "cache");
 		const { identifier, channel } = getVersionInfo();
 		return join(getCacheDir(), identifier, channel);
 	},
 	get userLogs(): string {
+		if (_portableDataDir) return join(_portableDataDir, "logs");
 		const { identifier, channel } = getVersionInfo();
 		return join(getLogsDir(), identifier, channel);
+	},
+	/** Whether the app is running in portable mode (data/ folder detected). */
+	get isPortable(): boolean {
+		return _portableDataDir !== null;
+	},
+	/** The portable data directory, or null if not in portable mode. */
+	get portableDataDir(): string | null {
+		return _portableDataDir;
 	},
 };
